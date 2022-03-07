@@ -10,6 +10,11 @@ import matplotlib.pyplot as plt
 import seaborn
 seaborn.set_context(context="talk")
 
+"""
+1. Transformer的结构可以分为Encoder与Decoder；以中译英为例，则Ecoder的输入为中文，Decoder的输出为英文
+2. 编码器由N个相同的层stack而成，每一层中包含两个子层
+"""
+
 class EncoderDecoder(nn.Module): #nn.Module中封装着Pytorch中所有的模块的基类
     def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
         super(EncoderDecoder, self).__init__() #继承 nn.Module 的模块在实现自己的 __init__ 函数时，一定要先调用 super().__init__()。
@@ -223,12 +228,6 @@ def make_model(src_vocab, tgt_vocab, N=6, d_model=512, d_ff=2014, h=8, dropout=0
         if p.dim() > 1:
             nn.init.xavier_uniform(p)
     return model
-
-class Batch(nn.Module):
-    def __init__(self, src, trg=None, pad=0):
-        self.src = src
-        self.src_mask = (src != pad).unsqueeze(-2)
-
 
 # 到此为止，Transformer的结构就构建完啦，学会了嘛！
 # 以下是有关于训练的一些技巧还有模型的设置，我放在第二个文件啦！

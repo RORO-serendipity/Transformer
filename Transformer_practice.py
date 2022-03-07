@@ -127,10 +127,9 @@ def subsequent_mask(size):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('unit8')
     return torch.from_numpy(subsequent_mask) == 0
 
-def attention(query, key, value, mask = None, dropout = None):  # p_attn即为权重矩阵，在transformer中有两种，一种是非mask，一种为mask
+def attention(query, key, value, mask = None, dropout = None): 
     d_k = query.size(-1)
-    scores = torch.matual(query, key.transpose(-2, -1)) \ 
-             / math.sqrt(d_k)  # transpose(-2, -1)意味着矩阵乘法只关注后两维，即序列长度，和每一时刻的特征数
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)  # transpose(-2, -1)意味着矩阵乘法只关注后两维，即序列长度，和每一时刻的特征数
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9) #利用一个非常小的数值代替负无穷之后，softmax就会将其输出为0
     p_attn = F.softmax(scores, dim = -1)
@@ -138,9 +137,100 @@ def attention(query, key, value, mask = None, dropout = None):  # p_attn即为�
         p_attn = dropout(p_attn)
     return torch.matual(p_attn, value), p_attn
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, h, d_model, dropout=0.1):
+        # h代表头数，d_model代表词嵌入的维度；d_k代表得到每个头获得的分割词向量维度d_k （应该就是将每个单词的维度按照h个数量，切割，每一个头获得的维度为 d_model/h）
+        super(MultiHeadAttention, self).__init__()
+        assert d_model % h == 0 #assert 声明，主张;作用：检查程序，不符合条件即终止程序
+        self.d_k = d_model // h
+        self.h = h
+        self.linears = clones(nn.Linear(d_model, d_model), 4)
+        self.attn = None
+        self.dropout = nn.Dropout(p = dropout)
+
+    def forward(self, query, key, value, mask = None):
+        if mask is not None:
+            mask = mask.unsqueeze(1) # 在矩阵的第二维添加一个维度，即若原来为[256,256]，则为[256，1，256]
+        nbatches = query.size(0) #代表有多少条样本
+        # 首先将Q, K, V三个矩阵与三个线性层用zip组合起来，可以实现并行计算；l(x).view() 意味着要将l(x)的输出转为这个维度，然后再将第一维和第二维调换，即(nbatches, self.h, -1, self.d_k), 目的是让句子长度与分割后的词向量维度相邻
+        # 利用卷积的多通道会刚好理解一些，（batchsize, 通道数，句子长度，词向量维度）
+        # 实现batch内所有通道的映射 d_model -> d_k * h
+        query, key, value = \
+            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+             for l, x in zip(self.linears, (query, key, value))]
+        # 对所有通道的线性映射实现Attention，并得到加权矩阵和权重矩阵
+        x, self.attn = attention(query, key, value, mask = mask, dropout = self.dropout)
+        # 将得到的每个头的4维张量的维度转换为输入时的维度，为了合并；contiguous是为了让转置后的张量可以使用view()函数
+        x = x.transpose(1, 2).contiguous()\
+            .view(nbatches, -1, self.h * self.d_k)
+        # 经过线性层后输出
+        return self.linears[-1](x) 
+
+# d_model = 512;d_ff = 2048
+class PositionwiseFeedForward(nn.Moudle):
+    def __init__(self, d_model, d_ff, dropout=0.1):
+        super(PositionwiseFeedForward,self).__init__()
+        # 希望输入和输出的维度相同，减小模型的复杂度
+        self.w_1 = nn.Linear(d_model, d_ff)
+        self.w_2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.dropout(p=dropout)
+
+    def forward(self, x):
+        return self.w_2(self.dropout(F.relu(self.w_1(x))))
+
+class Embeddings(nn.Module):
+    def __init__(self, d_model, vocab):
+        super(Embeddings, self).__init__()
+        self.lut = nn.Embedding(vocab, d_model)
+        self.d_model = d_model
+    
+    def forward(self, x):
+        return self.lut(x) * math.sqrt(self.d_model)
+
+class PositionEmbedding(nn.Module):
+    # 在一句话的每一个单词的编码中加入位置信息
+    def __init__(self, d_model, dropout, max_len=5000):
+        super(PositionEmbedding, self).__init__()
+        self.dropout = nn.dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) *
+                             -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
+        
+    def forward(self, x):
+        x = x + Variable(self.pe[:, :x.size(1)], requires_grad=False)
+        return self.dropout(x)
+
+def make_model(src_vocab, tgt_vocab, N=6, d_model=512, d_ff=2014, h=8, dropout=0.1):
+    c = copy.deepcopy
+    attn = MultiHeadAttention(h, d_model)
+    ff = PositionwiseFeedForward(d_model, d_ff, dropout)
+    position = PositionEmbedding(d_model, dropout)
+    # 逻辑关系太明显了，自己看吧
+    model = EncoderDecoder(
+        Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
+        Decoder(DecoderLayer(d_model, c(attn), c(attn), c(ff), dropout), N),
+        nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
+        nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
+        Generator(d_model, tgt_vocab))
+    # 参数初始化
+    for p in model.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform(p)
+    return model
+
+class Batch(nn.Module):
+    def __init__(self, src, trg=None, pad=0):
+        self.src = src
+        self.src_mask = (src != pad).unsqueeze(-2)
 
 
-
-
+# 到此为止，Transformer的结构就构建完啦，学会了嘛！
+# 以下是有关于训练的一些技巧还有模型的设置，我放在第二个文件啦！
 
 

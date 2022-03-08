@@ -37,7 +37,7 @@ class Embeddings(nn.Moudle):
         vocab: 词表的大小
         nn.Embedding: 词典的大小尺寸,比如总共出现5000个词,那就输入5000
         """
-        super(Embeddings).__init__()
+        super(Embeddings, self).__init__()
         self.lut = nn.Embedding(vocab, d_model)
         self.d_model = d_model
 
